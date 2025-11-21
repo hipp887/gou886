@@ -189,12 +189,12 @@ jobs:
           #   target: x86_64-pc-windows-msvc
           # - os: windows-latest
           #   target: aarch64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          # - os: ubuntu-22.04
-          #   target: x86_64-unknown-linux-gnu
+          # - os: macos-latest
+          #   target: aarch64-apple-darwin
+          # - os: macos-latest
+          #   target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -219,14 +219,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
-      - name: Install x86 OpenSSL (macOS only)
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: |
-          arch -x86_64 brew install openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+      # - name: Install x86 OpenSSL (macOS only)
+      #   if: matrix.target == 'x86_64-apple-darwin'
+      #   run: |
+      #     arch -x86_64 brew install openssl@3
+      #     echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+      #     echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+      #     echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+      #     echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -243,24 +243,24 @@ jobs:
           pnpm i
           pnpm run prebuild ${{ matrix.target }}
 
-      - name: Determine macOS signing availability
-        # Set SKIP_APPLE_SIGNING=true when either not macOS runner or APPLE_CERTIFICATE secret not provided
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.os }}" != "macos-latest" ]; then
-            echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
-            echo "Not macOS runner, skipping Apple signing/notarize steps."
-          else
-            # Check whether secrets exist (secrets expand to empty string if not present)
-            if [ -z "${{ secrets.APPLE_CERTIFICATE || '' }}" ]; then
-              echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
-              echo "APPLE_CERTIFICATE secret not found — will produce unsigned macOS builds."
-            else
-              echo "SKIP_APPLE_SIGNING=false" >> $GITHUB_ENV
-              echo "Apple signing secrets present — signing/notarize will run when implemented."
-            fi
-          fi
-        shell: bash
+      # - name: Determine macOS signing availability
+      #   # Set SKIP_APPLE_SIGNING=true when either not macOS runner or APPLE_CERTIFICATE secret not provided
+      #   run: |
+      #     set -euo pipefail
+      #     if [ "${{ matrix.os }}" != "macos-latest" ]; then
+      #       echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
+      #       echo "Not macOS runner, skipping Apple signing/notarize steps."
+      #     else
+      #       # Check whether secrets exist (secrets expand to empty string if not present)
+      #       if [ -z "${{ secrets.APPLE_CERTIFICATE || '' }}" ]; then
+      #         echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
+      #         echo "APPLE_CERTIFICATE secret not found — will produce unsigned macOS builds."
+      #       else
+      #         echo "SKIP_APPLE_SIGNING=false" >> $GITHUB_ENV
+      #         echo "Apple signing secrets present — signing/notarize will run when implemented."
+      #       fi
+      #     fi
+      #   shell: bash
 
       - name: Tauri build
         # 上游 5.24 修改了 latest.json 的生成逻辑，且依赖 tauri-plugin-update 2.10.0 暂未发布，故锁定在 0.5.23 版本
@@ -272,12 +272,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
           # Apple secrets 不再在全局注入；tauri-action 在没有证书时会生成未签名的 mac 构建。
           # 如需在 CI 上做签名/notarize，请在仓库 secrets 中添加 APPLE_CERTIFICATE 等并确保 SKIP_APPLE_SIGNING=false。
-          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
+          # APPLE_CERTIFICATE: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          # APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          # APPLE_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
+          # APPLE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          # APPLE_TEAM_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ needs.check_tag_version.outputs.tag }}
           releaseName: "Gou Gou tech ${{ needs.check_tag_version.outputs.tag }}"
@@ -288,12 +288,12 @@ jobs:
           args: --target ${{ matrix.target }}
           includeUpdaterJson: true
 
-      - name: Maybe run macOS signing/notarize steps
-        if: ${{ env.SKIP_APPLE_SIGNING != 'true' && matrix.os == 'macos-latest' }}
-        run: |
-          echo "Apple signing secrets present. If you want CI to run codesign/notarize here, implement steps using these secrets."
-          # 示例：在此处调用 notarytool / altool 进行 notarize，或执行 codesign。当前仓库未启用自动签名步骤以避免在没有 secrets 时失败。
-        shell: bash
+      # - name: Maybe run macOS signing/notarize steps
+      #   if: ${{ env.SKIP_APPLE_SIGNING != 'true' && matrix.os == 'macos-latest' }}
+      #   run: |
+      #     echo "Apple signing secrets present. If you want CI to run codesign/notarize here, implement steps using these secrets."
+      #     # 示例：在此处调用 notarytool / altool 进行 notarize，或执行 codesign。当前仓库未启用自动签名步骤以避免在没有 secrets 时失败。
+      #   shell: bash
 
   release-for-linux-arm:
     name: Release Build for Linux ARM
@@ -383,53 +383,17 @@ jobs:
           sudo apt install -y \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf
-      - name: Install cross toolchains and helpers
-        run: |
-          sudo apt-get update
-          # 安装交叉编译器与常用工具
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-                                  gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-                                  pkg-config cmake make file
-        shell: bash
 
-      - name: Setup cross env for armv7
-        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+      - name: Build for Linux
         run: |
-          # 告诉 cargo 在为 armv7 构建时用哪个 linker/编译器
-          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
-          echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
-          echo "CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++" >> $GITHUB_ENV
-          echo "AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> $GITHUB_ENV
-
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV || true
-          echo "PKG_CONFIG_PATH=/usr/arm-linux-gnueabihf/lib/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV || true
-        shell: bash
-
-      - name: Clean previous target (avoid混入host产物)
-        run: |
-          rm -rf src-tauri/target || true
-        shell: bash
-
-      - name: Debug list object file architectures
-        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
-        run: |
-          set -e
-          echo "Listing .o/.rcgu.o file types under src-tauri/target (may be empty before build):"
-          find src-tauri/target -name '*.rcgu.o' -o -name '*.o' -print0 | xargs -0 -n1 file || true
-        shell: bash
-
-      - name: Build for Linux (cross)
-        run: |
-          set -euo pipefail
           export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR:-/usr/arm-linux-gnueabihf}
-          export PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-/usr/arm-linux-gnueabihf/lib/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig}
-          export CC_armv7_unknown_linux_gnueabihf=${CC_armv7_unknown_linux_gnueabihf:-arm-linux-gnueabihf-gcc}
-          export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=${CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER:-arm-linux-gnueabihf-gcc}
-
-          echo "Building for target: ${{ matrix.target }}"
-
+          if [ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]; then
+            export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/:$PKG_CONFIG_PATH
+            export PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/
+          elif [ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]; then
+            export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig/:$PKG_CONFIG_PATH
+            export PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf/
+          fi
           pnpm build --target ${{ matrix.target }}
         env:
           NODE_OPTIONS: "--max_old_space_size=4096"
@@ -447,110 +411,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{env.VERSION}}
-          name: "Gou Gou tech v${{env.VERSION}}"
+          name: "Clash Verge Rev v${{env.VERSION}}"
           body: "See release notes for detailed changelog."
           token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           files: |
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
-
-  # release-for-fixed-webview2:
-  #   name: Release Build for Fixed WebView2
-  #   needs: [check_tag_version]
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       include:
-  #         - os: windows-latest
-  #           target: x86_64-pc-windows-msvc
-  #           arch: x64
-  #         - os: windows-latest
-  #           target: aarch64-pc-windows-msvc
-  #           arch: arm64
-  #   runs-on: ${{ matrix.os }}
-  #   steps:
-  #     - name: Checkout Repository
-  #       uses: actions/checkout@v4
-
-  #     - name: Add Rust Target
-  #       run: rustup target add ${{ matrix.target }}
-
-  #     - name: Rust Cache
-  #       uses: Swatinem/rust-cache@v2
-  #       with:
-  #         workspaces: src-tauri
-  #         save-if: false
-
-  #     - name: Install Node
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "22"
-
-  #     - uses: pnpm/action-setup@v4
-  #       name: Install pnpm
-  #       with:
-  #         run_install: false
-
-  #     - name: Pnpm install and check
-  #       run: |
-  #         pnpm i
-  #         pnpm run prebuild ${{ matrix.target }}
-
-  #     - name: Download WebView2 Runtime
-  #       run: |
-  #         invoke-webrequest -uri https://github.com/westinyang/WebView2RuntimeArchive/releases/download/109.0.1518.78/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab -outfile Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab
-  #         Expand .\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab -F:* ./src-tauri
-  #         Remove-Item .\src-tauri\tauri.windows.conf.json
-  #         Rename-Item .\src-tauri\webview2.${{ matrix.arch }}.json tauri.windows.conf.json
-
-  #     - name: Tauri build
-  #       id: build
-  #       # 上游 5.24 修改了 latest.json 的生成逻辑，且依赖 tauri-plugin-update 2.10.0 暂未发布，故锁定在 0.5.23 版本
-  #       uses: tauri-apps/tauri-action@v0.5.23
-  #       env:
-  #         NODE_OPTIONS: "--max_old_space_size=4096"
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-  #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-  #       with:
-  #         tauriScript: pnpm
-  #         args: --target ${{ matrix.target }}
-
-  #     - name: Rename
-  #       run: |
-  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*-setup.exe"
-  #         foreach ($file in $files) {
-  #           $newName = $file.Name -replace "-setup\\.exe$", "_fixed_webview2-setup.exe"
-  #           Rename-Item $file.FullName $newName
-  #         }
-
-  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*.nsis.zip"
-  #         foreach ($file in $files) {
-  #           $newName = $file.Name -replace "-setup\\.nsis\\.zip$", "_fixed_webview2-setup.nsis.zip"
-  #           Rename-Item $file.FullName $newName
-  #         }
-
-  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*-setup.exe.sig"
-  #         foreach ($file in $files) {
-  #           $newName = $file.Name -replace "-setup\\.exe\\.sig$", "_fixed_webview2-setup.exe.sig"
-  #           Rename-Item $file.FullName $newName
-  #         }
-
-  #     - name: Upload Release
-  #       uses: softprops/action-gh-release@v2
-  #       with:
-  #         tag_name: ${{ needs.check_tag_version.outputs.tag }}
-  #         name: "Gou Gou tech ${{ needs.check_tag_version.outputs.tag }}"
-  #         body: "See release notes for detailed changelog."
-  #         token: ${{ secrets.GITHUB_TOKEN }}
-  #         prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
-  #         files: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*setup*
-
-  #     - name: Portable Bundle
-  #       run: pnpm portable-fixed-webview2 ${{ matrix.target }}
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-update:
     if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
@@ -578,32 +445,6 @@ jobs:
         run: pnpm updater
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # release-update-for-fixed-webview2:
-  #   if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
-  #   runs-on: ubuntu-latest
-  #   needs: [update_tag, check_tag_version]
-  #   steps:
-  #     - name: Checkout repository
-  #       uses: actions/checkout@v4
-
-  #     - name: Install Node
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "22"
-
-  #     - uses: pnpm/action-setup@v4
-  #       name: Install pnpm
-  #       with:
-  #         run_install: false
-
-  #     - name: Pnpm install
-  #       run: pnpm i
-
-  #     - name: Release updater file
-  #       run: pnpm updater-fixed-webview2
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   submit-to-winget:
     if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
