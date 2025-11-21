@@ -1,0 +1,706 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to use (如 v1.2.3)。如果为空并且由 tag push 触发则使用触发的 tag。手动触发请填写该字段以避免误触发。'
+        required: false
+  push:
+    # -rc tag 时预览发布, 跳过 telegram 通知、跳过 winget 提交、跳过 latest.json 文件更新
+    tags:
+      - "v*.*.*"
+
+permissions: write-all
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  HUSKY: 0
+concurrency:
+  # only allow per workflow per commit (and not pr) to run at a time
+  group: "${{ github.workflow }} - ${{ github.head_ref || github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check_tag_version:
+    name: Check Release Tag and package.json Version Consistency
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set_tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag to use (from input or ref)
+        id: determine_tag
+        run: |
+          set -euo pipefail
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+
+          # 优先使用 workflow_dispatch 的输入 tag
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            TAG_REF="${{ github.event.inputs.tag }}"
+            echo "Using workflow_dispatch input tag: $TAG_REF"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG_REF="${GITHUB_REF#refs/tags/}"
+            echo "Triggered by tag ref: $TAG_REF"
+          else
+            echo "Error: run is neither a tag push nor provided a tag via workflow_dispatch."
+            echo "If you want to manually trigger a release, set the 'tag' input when running the workflow."
+            exit 1
+          fi
+
+          # export for later steps
+          echo "TAG_REF=$TAG_REF" >> $GITHUB_ENV
+          echo "tag=$TAG_REF" >> $GITHUB_OUTPUT
+
+      - name: Check if tag is from main branch
+        run: |
+          set -euo pipefail
+          TAG_REF="$TAG_REF"
+          echo "Checking if tag $TAG_REF is from main branch..."
+
+          # 确保 origin/main 可用
+          git fetch origin main --depth=1 || true
+
+          # 获取 tag 指向的 commit
+          if git rev-parse --verify --quiet "refs/tags/$TAG_REF" >/dev/null 2>&1; then
+            TAG_COMMIT=$(git rev-list -n 1 "refs/tags/$TAG_REF")
+          else
+            # 允许传入已经去掉 refs/tags/ 的纯 tag 名
+            TAG_COMMIT=$(git rev-list -n 1 "$TAG_REF" 2>/dev/null || true)
+          fi
+
+          if [ -z "$TAG_COMMIT" ]; then
+            echo "❌ Could not resolve tag commit for $TAG_REF"
+            exit 1
+          fi
+
+          MAIN_COMMITS=$(git rev-list origin/main)
+
+          if echo "$MAIN_COMMITS" | grep -q "$TAG_COMMIT"; then
+            echo "✅ Tag $TAG_REF is from main branch"
+          else
+            echo "❌ Tag $TAG_REF is not from main branch"
+            echo "This release workflow only accepts tags from main branch."
+            exit 1
+          fi
+
+      - name: Check tag and package.json version
+        id: set_tag
+        run: |
+          set -euo pipefail
+          TAG_REF="$TAG_REF"
+          echo "Current tag: $TAG_REF"
+
+          PKG_VERSION=$(jq -r .version package.json)
+          echo "package.json version: $PKG_VERSION"
+
+          EXPECTED_TAG="v$PKG_VERSION"
+
+          if [[ "$TAG_REF" != "$EXPECTED_TAG" ]]; then
+            echo "❌ Version mismatch:"
+            echo "   Git tag       : $TAG_REF"
+            echo "   package.json  : $EXPECTED_TAG"
+            exit 1
+          fi
+
+          echo "✅ Tag and package.json version are consistent."
+          # 输出 tag 供后续 jobs 使用
+          echo "tag=$TAG_REF" >> $GITHUB_OUTPUT
+
+  update_tag:
+    name: Update tag
+    runs-on: ubuntu-latest
+    needs: [check_tag_version, release, release-for-linux-arm]
+    #, release-for-fixed-webview2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch UPDATE logs
+        id: fetch_update_logs
+        run: bash ./scripts/extract_update_logs.sh
+        shell: bash
+
+      - name: Set Env
+        run: |
+          echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
+          echo "TAG_NAME=${{ needs.check_tag_version.outputs.tag }}" >> $GITHUB_ENV
+          VERSION=$(echo "${{ needs.check_tag_version.outputs.tag }}" | sed 's/^v//')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://github.com/marshall666888/www/releases/download/${{ needs.check_tag_version.outputs.tag }}" >> $GITHUB_ENV
+        shell: bash
+
+      - run: |
+          if [ -z "$UPDATE_LOGS" ]; then
+            echo "No update logs found, using default message"
+            UPDATE_LOGS="More new features are now supported. Check for detailed changelog soon."
+          else
+            echo "Using found update logs"
+          fi
+
+          cat > release.txt << EOF
+          $UPDATE_LOGS
+
+          ## 下载地址
+
+          ### Windows (不再支持Win7)
+          #### 正常版本(推荐)
+          - [64位(常用)](${DOWNLOAD_URL}/GouTech_${VERSION}_x64-setup.exe) | [ARM64(不常用)](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64-setup.exe)
+
+          #### 内置Webview2版(体积较大，仅在企业版系统或无法安装webview2时使用)
+          - [64位](${DOWNLOAD_URL}/GouTech_${VERSION}_x64_fixed_webview2-setup.exe) | [ARM64](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64_fixed_webview2-setup.exe)
+
+          ### macOS
+          - [Apple M芯片](${DOWNLOAD_URL}/GouTech_${VERSION}_aarch64.dmg) | [Intel芯片](${DOWNLOAD_URL}/GouTech_${VERSION}_x64.dmg)
+
+          ### Linux
+          #### DEB包(Debian系) 使用 apt ./路径 安装
+          - [64位](${DOWNLOAD_URL}/GouTech_${VERSION}_amd64.deb) | [ARM64](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64.deb) | [ARMv7](${DOWNLOAD_URL}/GouTech_${VERSION}_armhf.deb)
+
+          #### RPM包(Redhat系) 使用 dnf ./路径 安装
+          - [64位](${DOWNLOAD_URL}/GouTech-${VERSION}-1.x86_64.rpm) | [ARM64](${DOWNLOAD_URL}/GouTech-${VERSION}-1.aarch64.rpm) | [ARMv7](${DOWNLOAD_URL}/GouTech-${VERSION}-1.armhfp.rpm)
+
+          Created at ${BUILDTIME}.
+          EOF
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "Gou Gou tech ${{ env.TAG_NAME }}"
+          body_path: release.txt
+          draft: false
+          prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # generate_release_notes: true
+
+  release:
+    name: Release Build
+    needs: [check_tag_version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+          # - os: windows-latest
+          #   target: aarch64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          # - os: ubuntu-22.04
+          #   target: x86_64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: false
+
+      - name: Install dependencies (ubuntu only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxslt1.1 libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install x86 OpenSSL (macOS only)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          arch -x86_64 brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          run_install: false
+
+      - name: Pnpm install and check
+        run: |
+          pnpm i
+          pnpm run prebuild ${{ matrix.target }}
+
+      - name: Determine macOS signing availability
+        # Set SKIP_APPLE_SIGNING=true when either not macOS runner or APPLE_CERTIFICATE secret not provided
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os }}" != "macos-latest" ]; then
+            echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
+            echo "Not macOS runner, skipping Apple signing/notarize steps."
+          else
+            # Check whether secrets exist (secrets expand to empty string if not present)
+            if [ -z "${{ secrets.APPLE_CERTIFICATE || '' }}" ]; then
+              echo "SKIP_APPLE_SIGNING=true" >> $GITHUB_ENV
+              echo "APPLE_CERTIFICATE secret not found — will produce unsigned macOS builds."
+            else
+              echo "SKIP_APPLE_SIGNING=false" >> $GITHUB_ENV
+              echo "Apple signing secrets present — signing/notarize will run when implemented."
+            fi
+          fi
+        shell: bash
+
+      - name: Tauri build
+        # 上游 5.24 修改了 latest.json 的生成逻辑，且依赖 tauri-plugin-update 2.10.0 暂未发布，故锁定在 0.5.23 版本
+        uses: tauri-apps/tauri-action@v0.5.23
+        env:
+          NODE_OPTIONS: "--max_old_space_size=4096"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          # Apple secrets 不再在全局注入；tauri-action 在没有证书时会生成未签名的 mac 构建。
+          # 如需在 CI 上做签名/notarize，请在仓库 secrets 中添加 APPLE_CERTIFICATE 等并确保 SKIP_APPLE_SIGNING=false。
+          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.os == 'macos-latest' && secrets.APPLE_TEAM_ID || '' }}
+        with:
+          tagName: ${{ needs.check_tag_version.outputs.tag }}
+          releaseName: "Gou Gou tech ${{ needs.check_tag_version.outputs.tag }}"
+          releaseBody: "Draft release, will be updated later."
+          releaseDraft: true
+          prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
+          tauriScript: pnpm
+          args: --target ${{ matrix.target }}
+          includeUpdaterJson: true
+
+      - name: Maybe run macOS signing/notarize steps
+        if: ${{ env.SKIP_APPLE_SIGNING != 'true' && matrix.os == 'macos-latest' }}
+        run: |
+          echo "Apple signing secrets present. If you want CI to run codesign/notarize here, implement steps using these secrets."
+          # 示例：在此处调用 notarytool / altool 进行 notarize，或执行 codesign。当前仓库未启用自动签名步骤以避免在没有 secrets 时失败。
+        shell: bash
+
+  release-for-linux-arm:
+    name: Release Build for Linux ARM
+    needs: [check_tag_version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-gnueabihf
+            arch: armhf
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Pnpm install and check
+        run: |
+          pnpm i
+          pnpm run prebuild ${{ matrix.target }}
+
+      - name: "Setup for linux"
+        run: |-
+          sudo ls -lR /etc/apt/
+
+          cat > /tmp/sources.list << EOF
+          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu jammy main multiverse universe restricted
+          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu jammy-security main multiverse universe restricted
+          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu jammy-updates main multiverse universe restricted
+          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu jammy-backports main multiverse universe restricted
+
+          deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy main multiverse universe restricted
+          deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main multiverse universe restricted
+          deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main multiverse universe restricted
+          deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main multiverse universe restricted
+          EOF
+
+          sudo mv /etc/apt/sources.list /etc/apt/sources.list.default
+          sudo mv /tmp/sources.list /etc/apt/sources.list
+
+          sudo dpkg --add-architecture ${{ matrix.arch }}
+          sudo apt update
+
+          sudo apt install -y \
+            libxslt1.1:${{ matrix.arch }} \
+            libwebkit2gtk-4.1-dev:${{ matrix.arch }} \
+            libayatana-appindicator3-dev:${{ matrix.arch }} \
+            libssl-dev:${{ matrix.arch }} \
+            patchelf:${{ matrix.arch }} \
+            librsvg2-dev:${{ matrix.arch }}
+
+      - name: "Install aarch64 tools"
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+
+      - name: "Install armv7 tools"
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo apt install -y \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf
+      - name: Install cross toolchains and helpers
+        run: |
+          sudo apt-get update
+          # 安装交叉编译器与常用工具
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+                                  gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+                                  pkg-config cmake make file
+        shell: bash
+
+      - name: Setup cross env for armv7
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          # 告诉 cargo 在为 armv7 构建时用哪个 linker/编译器
+          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+          echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+          echo "CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++" >> $GITHUB_ENV
+          echo "AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> $GITHUB_ENV
+
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV || true
+          echo "PKG_CONFIG_PATH=/usr/arm-linux-gnueabihf/lib/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV || true
+        shell: bash
+
+      - name: Clean previous target (avoid混入host产物)
+        run: |
+          rm -rf src-tauri/target || true
+        shell: bash
+
+      - name: Debug list object file architectures
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          set -e
+          echo "Listing .o/.rcgu.o file types under src-tauri/target (may be empty before build):"
+          find src-tauri/target -name '*.rcgu.o' -o -name '*.o' -print0 | xargs -0 -n1 file || true
+        shell: bash
+
+      - name: Build for Linux (cross)
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR:-/usr/arm-linux-gnueabihf}
+          export PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-/usr/arm-linux-gnueabihf/lib/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig}
+          export CC_armv7_unknown_linux_gnueabihf=${CC_armv7_unknown_linux_gnueabihf:-arm-linux-gnueabihf-gcc}
+          export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=${CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER:-arm-linux-gnueabihf-gcc}
+
+          echo "Building for target: ${{ matrix.target }}"
+
+          pnpm build --target ${{ matrix.target }}
+        env:
+          NODE_OPTIONS: "--max_old_space_size=4096"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Get Version
+        run: |
+          sudo apt-get update
+          sudo apt-get install jq
+          echo "VERSION=$(cat package.json | jq '.version' | tr -d '"')" >> $GITHUB_ENV
+          echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{env.VERSION}}
+          name: "Gou Gou tech v${{env.VERSION}}"
+          body: "See release notes for detailed changelog."
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
+          files: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+
+  # release-for-fixed-webview2:
+  #   name: Release Build for Fixed WebView2
+  #   needs: [check_tag_version]
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - os: windows-latest
+  #           target: x86_64-pc-windows-msvc
+  #           arch: x64
+  #         - os: windows-latest
+  #           target: aarch64-pc-windows-msvc
+  #           arch: arm64
+  #   runs-on: ${{ matrix.os }}
+  #   steps:
+  #     - name: Checkout Repository
+  #       uses: actions/checkout@v4
+
+  #     - name: Add Rust Target
+  #       run: rustup target add ${{ matrix.target }}
+
+  #     - name: Rust Cache
+  #       uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: src-tauri
+  #         save-if: false
+
+  #     - name: Install Node
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "22"
+
+  #     - uses: pnpm/action-setup@v4
+  #       name: Install pnpm
+  #       with:
+  #         run_install: false
+
+  #     - name: Pnpm install and check
+  #       run: |
+  #         pnpm i
+  #         pnpm run prebuild ${{ matrix.target }}
+
+  #     - name: Download WebView2 Runtime
+  #       run: |
+  #         invoke-webrequest -uri https://github.com/westinyang/WebView2RuntimeArchive/releases/download/109.0.1518.78/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab -outfile Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab
+  #         Expand .\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.${{ matrix.arch }}.cab -F:* ./src-tauri
+  #         Remove-Item .\src-tauri\tauri.windows.conf.json
+  #         Rename-Item .\src-tauri\webview2.${{ matrix.arch }}.json tauri.windows.conf.json
+
+  #     - name: Tauri build
+  #       id: build
+  #       # 上游 5.24 修改了 latest.json 的生成逻辑，且依赖 tauri-plugin-update 2.10.0 暂未发布，故锁定在 0.5.23 版本
+  #       uses: tauri-apps/tauri-action@v0.5.23
+  #       env:
+  #         NODE_OPTIONS: "--max_old_space_size=4096"
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+  #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+  #       with:
+  #         tauriScript: pnpm
+  #         args: --target ${{ matrix.target }}
+
+  #     - name: Rename
+  #       run: |
+  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*-setup.exe"
+  #         foreach ($file in $files) {
+  #           $newName = $file.Name -replace "-setup\\.exe$", "_fixed_webview2-setup.exe"
+  #           Rename-Item $file.FullName $newName
+  #         }
+
+  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*.nsis.zip"
+  #         foreach ($file in $files) {
+  #           $newName = $file.Name -replace "-setup\\.nsis\\.zip$", "_fixed_webview2-setup.nsis.zip"
+  #           Rename-Item $file.FullName $newName
+  #         }
+
+  #         $files = Get-ChildItem ".\src-tauri\target\${{ matrix.target }}\release\bundle\nsis\*-setup.exe.sig"
+  #         foreach ($file in $files) {
+  #           $newName = $file.Name -replace "-setup\\.exe\\.sig$", "_fixed_webview2-setup.exe.sig"
+  #           Rename-Item $file.FullName $newName
+  #         }
+
+  #     - name: Upload Release
+  #       uses: softprops/action-gh-release@v2
+  #       with:
+  #         tag_name: ${{ needs.check_tag_version.outputs.tag }}
+  #         name: "Gou Gou tech ${{ needs.check_tag_version.outputs.tag }}"
+  #         body: "See release notes for detailed changelog."
+  #         token: ${{ secrets.GITHUB_TOKEN }}
+  #         prerelease: ${{ contains(needs.check_tag_version.outputs.tag, '-rc') }}
+  #         files: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*setup*
+
+  #     - name: Portable Bundle
+  #       run: pnpm portable-fixed-webview2 ${{ matrix.target }}
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-update:
+    if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
+    name: Release Update
+    runs-on: ubuntu-latest
+    needs: [update_tag, check_tag_version]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          run_install: false
+
+      - name: Pnpm install
+        run: pnpm i
+
+      - name: Release updater file
+        run: pnpm updater
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # release-update-for-fixed-webview2:
+  #   if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
+  #   runs-on: ubuntu-latest
+  #   needs: [update_tag, check_tag_version]
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+
+  #     - name: Install Node
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "22"
+
+  #     - uses: pnpm/action-setup@v4
+  #       name: Install pnpm
+  #       with:
+  #         run_install: false
+
+  #     - name: Pnpm install
+  #       run: pnpm i
+
+  #     - name: Release updater file
+  #       run: pnpm updater-fixed-webview2
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  submit-to-winget:
+    if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
+    name: Submit to Winget
+    runs-on: ubuntu-latest
+    needs: [update_tag, release-update, check_tag_version]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get Version
+        run: |
+          sudo apt-get update
+          sudo apt-get install jq
+          echo "VERSION=$(cat package.json | jq '.version' | tr -d '\"')" >> $GITHUB_ENV
+      - name: Submit to Winget
+        uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: GouTech.GouTech
+          version: ${{env.VERSION}}
+          release-tag: v${{env.VERSION}}
+          installers-regex: '_(arm64|x64|x86)-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN  }}
+
+  notify-telegram:
+    if: ${{ !contains(needs.check_tag_version.outputs.tag, '-rc') }}
+    name: Notify Telegram
+    runs-on: ubuntu-latest
+    needs:
+      [
+        update_tag,
+        release-update,
+        # release-update-for-fixed-webview2,
+        submit-to-winget,
+        check_tag_version,
+      ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch UPDATE logs
+        id: fetch_update_logs
+        run: bash ./scripts/extract_update_logs.sh
+        shell: bash
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get Version and Release Info
+        run: |
+          sudo apt-get update
+          sudo apt-get install jq
+          echo "VERSION=$(cat package.json | jq '.version' | tr -d '\"')" >> $GITHUB_ENV
+          echo "DOWNLOAD_URL=https://github.com/marshall666888/www/releases/download/${{ needs.check_tag_version.outputs.tag }}" >> $GITHUB_ENV
+          echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
+
+      - name: Generate release.txt
+        run: |
+          if [ -z "$UPDATE_LOGS" ]; then
+            echo "No update logs found, using default message"
+            UPDATE_LOGS="More new features are now supported. Check for detailed changelog soon."
+          else
+            echo "Using found update logs"
+          fi
+
+          cat > release.txt << EOF
+          $UPDATE_LOGS
+
+          ## 下载地址
+
+          ### Windows (不再支持Win7)
+          #### 正常版本(推荐)
+          - [64位(常用)](${DOWNLOAD_URL}/GouTech_${VERSION}_x64-setup.exe) | [ARM64(不常用)](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64-setup.exe)
+
+          #### 内置Webview2版(体积较大，仅在企业版系统或无法安装webview2时使用)
+          - [64位](${DOWNLOAD_URL}/GouTech_${VERSION}_x64_fixed_webview2-setup.exe) | [ARM64](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64_fixed_webview2-setup.exe)
+
+          ### macOS
+          - [Apple M芯片](${DOWNLOAD_URL}/GouTech_${VERSION}_aarch64.dmg) | [Intel芯片](${DOWNLOAD_URL}/GouTech_${VERSION}_x64.dmg)
+
+          ### Linux
+          #### DEB包(Debian系) 使用 apt ./路径 安装
+          - [64位](${DOWNLOAD_URL}/GouTech_${VERSION}_amd64.deb) | [ARM64](${DOWNLOAD_URL}/GouTech_${VERSION}_arm64.deb) | [ARMv7](${DOWNLOAD_URL}/GouTech_${VERSION}_armhf.deb)
+
+          #### RPM包(Redhat系) 使用 dnf ./路径 安装
+          - [64位](${DOWNLOAD_URL}/GouTech-${VERSION}-1.x86_64.rpm) | [ARM64](${DOWNLOAD_URL}/GouTech-${VERSION}-1.aarch64.rpm) | [ARMv7](${DOWNLOAD_URL}/GouTech-${VERSION}-1.armhfp.rpm)
+         
+          Created at ${BUILDTIME}.
+          EOF
