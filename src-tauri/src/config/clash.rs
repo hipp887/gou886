@@ -81,7 +81,7 @@ impl IClashTemp {
                 "https://yacd.metacubex.one",
                 "https://metacubex.github.io",
                 "https://board.zash.run.place",
-                "https://ns-api-hz.oss-cn-hangzhou.aliyuncs.com"
+                "https://ns-api-hz.oss-cn-hangzhou.aliyuncs.com",
             ]
             .into(),
         );

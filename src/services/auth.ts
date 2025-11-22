@@ -74,12 +74,21 @@ export const register = async (registrationData: any) => {
       responseData = response.data;
     }
 
-    // 通常注册成功后不需要立即登录并设置token，这里只返回成功状态
-    if (responseData && responseData.code === 0) {
-      // 假设成功响应的code为0
-      return { success: true };
+    if (!responseData || !(responseData.token || responseData.auth_data)) {
+      throw new Error("登录数据不完整");
+    }
+
+    const handledResponse = handleLoginSuccess(responseData);
+
+    if (handledResponse.success) {
+      return {
+        success: true,
+        token: responseData.token,
+        auth_data: responseData.auth_data,
+        is_admin: responseData.is_admin,
+      };
     } else {
-      throw new Error(responseData?.message || "注册失败");
+      throw new Error(handledResponse.error);
     }
   } catch (error: any) {
     console.log(error.message);

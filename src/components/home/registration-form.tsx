@@ -73,7 +73,6 @@ export const RegistrationForm = ({ onSwitchToLogin }: RegistrationFormProps) => 
   interface RegistrationFormData {
     emailPrefix: string;
     emailSuffix: string;
-    email_code: string;
     password: string;
     confirmPassword: string;
     invite_code?: string;
@@ -176,36 +175,7 @@ export const RegistrationForm = ({ onSwitchToLogin }: RegistrationFormProps) => 
               {errors.emailSuffix && <Typography color="error" variant="caption">{errors.emailSuffix?.message}</Typography>}
             </FormControl>
 
-            <FormControl fullWidth sx={{ mb: 3 }}>
-              <Controller
-                name="email_code"
-                control={control}
-                rules={{ required: "验证码是必填项" }}
-                render={({ field: { onChange, value } }) => (
-                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                    <TextField
-                      onChange={onChange}
-                      value={value || ""}
-                      placeholder="输入验证码"
-                      fullWidth
-                      variant="outlined"
-                      error={!!errors.email_code}
-                      helperText={errors.email_code?.message}
-                      sx={{ flexGrow: 1, '& .MuiOutlinedInput-root': { borderRadius: '4px 0 0 4px' } }}
-                    />
-                    <Button
-                      variant="contained"
-                      onClick={handleSendCode}
-                      disabled={isSendingCode || countdown > 0 || !watch("emailPrefix") || !watch("emailSuffix")}
-                      style={{ borderRadius: '0 4px 4px 0' }}
-                      sx={{ flexShrink: 0, minWidth: 120, height: 56 }} // 固定按钮宽度和高度，确保与 TextField 对齐
-                    >
-                      {countdown > 0 ? `${countdown}s` : "发送验证码"}
-                    </Button>
-                  </Box>
-                )}
-              />
-            </FormControl>
+           
 
             <FormControl fullWidth sx={{ mb: 3 }}>
               <Controller

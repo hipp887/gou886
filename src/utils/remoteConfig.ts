@@ -1,6 +1,6 @@
 // src/config/remoteConfig.ts
 import { decryptRemoteConf, type EncJson } from "./asegcm";
-
+import { callServerFetch } from "@/services/cmds";
 const CONF_URL = import.meta.env.VITE_REMOTE_CONF_URL as string;
 const PASSPHRASE = import.meta.env.VITE_CONF_PASSPHRASE as string;
 
@@ -33,15 +33,36 @@ export function isDifferentFromCache(api: string): boolean {
 
 /** 拉取远端加密配置并解密 -> RemoteConf */
 export async function fetchAndDecryptRemote(): Promise<RemoteConf> {
-  console.log(CONF_URL,3333)
-  const res = await fetch(CONF_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetch conf failed: ${res.status}`);
-  const encJson = (await res.json()) as EncJson; // { s, it, n, c }
+  const text: any = await callServerFetch(CONF_URL);
+  // 假设 EncJson, RemoteConf 类型已经声明
+
+  let encJson: EncJson;
+  try {
+    const first = JSON.parse(text);
+    if (typeof first === "string") {
+      // 响应是一个字符串字面量，里面才是 JSON
+      encJson = JSON.parse(first) as EncJson;
+    } else {
+      // 响应已经是对象
+      encJson = first as EncJson;
+    }
+
+  } catch (e) {
+    throw new Error("Invalid JSON from remote: " + (e as Error).message);
+  }
+
   const plain = await decryptRemoteConf(encJson, PASSPHRASE);
   const conf = JSON.parse(plain) as RemoteConf;
   if (!conf.api || typeof conf.api !== "string")
     throw new Error("conf.api invalid");
   return conf;
+
+  // const encJson = (await res.json()) as EncJson; // { s, it, n, c }
+  // const plain = await decryptRemoteConf(encJson, PASSPHRASE);
+  // const conf = JSON.parse(plain) as RemoteConf;
+  // if (!conf.api || typeof conf.api !== "string")
+  //   throw new Error("conf.api invalid");
+  // return conf;
 }
 
 /** 初始化流程：

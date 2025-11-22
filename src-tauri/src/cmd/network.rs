@@ -3,6 +3,25 @@ use crate::core::{async_proxy_query::AsyncProxyQuery, EventDrivenProxyManager};
 use crate::wrap_err;
 use network_interface::NetworkInterface;
 use serde_yaml::Mapping;
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct Data { msg: String }
+
+
+#[tauri::command]
+pub async fn server_action_fetch(url: String) -> Result<Data, String> {
+    if !url.starts_with("http") {
+        return Err("invalid url".into());
+    }
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(Data { msg: text })
+}
 
 /// get the system proxy
 #[tauri::command]

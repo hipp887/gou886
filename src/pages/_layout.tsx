@@ -53,7 +53,7 @@ const handleNoticeMessage = (
   t: (key: string) => string,
   navigate: (path: string, options?: any) => void,
 ) => {
-  console.log("[通知监听 V3] 收到消息:", status, msg);
+  console.log("[通知监听 V2] 收到消息:", status, msg);
 
   switch (status) {
     case "import_sub_url::ok":

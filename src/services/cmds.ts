@@ -444,6 +444,11 @@ export async function getSystemProxy() {
   }>("get_sys_proxy");
 }
 
+export async function callServerFetch(url: string) {
+  const res = await invoke<{ msg: string }>("server_action_fetch", { url });
+  return res.msg;
+}
+
 export async function getAutotemProxy() {
   try {
     console.log("[API] 开始调用 get_auto_proxy");

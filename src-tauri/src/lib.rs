@@ -287,6 +287,7 @@ mod app_init {
         tauri::generate_handler![
             // Common commands
             cmd::get_sys_proxy,
+            cmd::server_action_fetch,
             cmd::get_auto_proxy,
             cmd::open_app_dir,
             cmd::open_logs_dir,
