@@ -1,6 +1,8 @@
-import axios from "axios";
 import { readFileSync } from "fs";
-import { log_success, log_error, log_info } from "./utils.mjs";
+
+import axios from "axios";
+
+import { log_error, log_info, log_success } from "./utils.mjs";
 
 const CHAT_ID_RELEASE = "@clash_verge_re"; // 正式发布频道
 const CHAT_ID_TEST = "@vergetest"; // 测试频道
@@ -71,11 +73,24 @@ async function sendTelegramNotification() {
       .join("\n");
   }
 
+  function normalizeDetailsTags(content) {
+    return content
+      .replace(
+        /<summary>\s*<strong>\s*(.*?)\s*<\/strong>\s*<\/summary>/g,
+        "\n<b>$1</b>\n",
+      )
+      .replace(/<summary>\s*(.*?)\s*<\/summary>/g, "\n<b>$1</b>\n")
+      .replace(/<\/?details>/g, "")
+      .replace(/<\/?strong>/g, (m) => (m === "</strong>" ? "</b>" : "<b>"))
+      .replace(/<br\s*\/?>/g, "\n");
+  }
+
+  releaseContent = normalizeDetailsTags(releaseContent);
   const formattedContent = convertMarkdownToTelegramHTML(releaseContent);
 
   const releaseTitle = isAutobuild ? "滚动更新版发布" : "正式发布";
   const encodedVersion = encodeURIComponent(version);
-  const content = `<b>🎉 <a href="https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/v${encodedVersion}">Clash Verge Rev v${version}</a> ${releaseTitle}</b>\n\n${formattedContent}`;
+  const content = `<b>🎉 <a href="https://github.com/clash-verge-rev/clash-verge-rev/releases/tag/autobuild">Clash Verge Rev v${version}</a> ${releaseTitle}</b>\n\n${formattedContent}`;
 
   // 发送到 Telegram
   try {
