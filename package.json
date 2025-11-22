@@ -1,6 +1,6 @@
 {
   "name": "gou886",
-  "version": "2.5.5",
+  "version": "2.5.6",
   "scripts": {
     "dev": "cross-env RUST_BACKTRACE=1 tauri dev -f verge-dev",
     "dev:diff": "cross-env RUST_BACKTRACE=1 tauri dev -f verge-dev",
