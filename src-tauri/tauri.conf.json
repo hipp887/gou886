@@ -3,7 +3,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
     "active": true,
-    "longDescription": "GouGouTech",
+    "longDescription": "狗狗科技",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -12,11 +12,11 @@
       "icons/icon.ico"
     ],
     "resources": ["resources", "resources/locales/*"],
-    "publisher": "GouGouTech",
+    "publisher": "狗狗科技",
     "externalBin": ["sidecar/verge-mihomo", "sidecar/verge-mihomo-alpha"],
     "copyright": "GNU General Public License v3.0",
     "category": "DeveloperTool",
-    "shortDescription": "GouGouTech",
+    "shortDescription": "狗狗科技",
     "createUpdaterArtifacts": true
   },
   "build": {
@@ -25,7 +25,7 @@
     "beforeDevCommand": "pnpm run web:dev",
     "devUrl": "http://localhost:3000/"
   },
-  "productName": "GouGouTech",
+  "productName": "狗狗科技",
   "identifier": "io.github.clash-verge-rev.clash-verge-rev",
   "plugins": {
     "updater": {

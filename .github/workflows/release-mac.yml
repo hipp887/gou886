@@ -1,0 +1,236 @@
+name: Release (Windows + Linux + macOS)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+jobs:
+  build:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          # Windows
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+
+          # macOS（Apple / Intel）
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set build timestamp
+        shell: bash
+        run: |
+          TS=$(date +%s)
+          echo "UPLOAD_TS=$TS" >> $GITHUB_ENV
+          echo "📦 Using upload timestamp: $TS"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Show versions
+        shell: bash
+        run: |
+          node -v
+          pnpm -v
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: choco install nsis -y
+
+      - name: macOS deps
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew update
+          brew install coreutils jq || true
+
+      - name: Install JS deps
+        timeout-minutes: 20
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          NPM_CONFIG_FETCH_RETRIES: "5"
+          NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "20000"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "120000"
+        run: |
+          set -euxo pipefail
+          pnpm store prune || true
+          rm -rf node_modules
+          pnpm install --frozen-lockfile
+
+      - name: Rebuild esbuild
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pnpm rebuild esbuild || true
+          npx esbuild --version || true
+
+      - name: Prepare sidecar
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pnpm run prebuild ${{ matrix.target }}
+
+      - name: Build frontend
+        timeout-minutes: 25
+        shell: bash
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euxo pipefail
+          pnpm run web:build -- --debug
+
+      - name: Disable updater signing when no private key (Win)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          if ("${{ secrets.TAURI_PRIVATE_KEY }}" -eq "") {
+            Write-Host "No TAURI_PRIVATE_KEY – removing updater.pubkey for unsigned build."
+            if (Test-Path "src-tauri/tauri.conf.json") {
+              Copy-Item src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak -Force
+              (Get-Content src-tauri/tauri.conf.json) |
+                Where-Object {$_ -notmatch '"pubkey"\s*:'} |
+                Set-Content src-tauri/tauri.conf.json
+            }
+          } else {
+            Write-Host "TAURI_PRIVATE_KEY present – keep pubkey and sign build."
+          }
+
+      - name: Disable updater signing when no private key (*nix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ -z "${{ secrets.TAURI_PRIVATE_KEY }}" ]]; then
+            echo "No TAURI_PRIVATE_KEY – removing updater.pubkey for unsigned build."
+            if [[ -f "src-tauri/tauri.conf.json" ]]; then
+              cp src-tauri/tauri.conf.json src-tauri/tauri.conf.json.bak
+              awk '!/\"pubkey\"[[:space:]]*:/' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp && mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+            fi
+          else
+            echo "TAURI_PRIVATE_KEY present – keep pubkey and sign build."
+          fi
+
+      - name: Tauri build (native)
+        if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
+        timeout-minutes: 90
+        uses: tauri-apps/tauri-action@v0
+        env:
+          NODE_OPTIONS: "--max_old_space_size=4096"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tauriScript: pnpm
+          args: --target ${{ matrix.target }}
+          includeUpdaterJson: true
+
+      # ---------------- 上传 artifact 以供 publish job 使用 ----------------
+      - name: Collect bundles for artifact upload
+        shell: bash
+        run: |
+          set -euxo pipefail || true
+          rm -rf bundles || true
+          mkdir -p bundles
+          # 复制常见的打包输出目录到 bundles 下（按需扩展）
+          cp -r src-tauri/target/**/release/bundle/* bundles/ 2>/dev/null || true
+          # 有时 tauri 会把 exe / dmg / deb 放在 release 目录根，额外再尝试复制
+          cp -r src-tauri/target/**/release/*.exe bundles/ 2>/dev/null || true
+          cp -r src-tauri/target/**/release/*.dmg bundles/ 2>/dev/null || true
+          cp -r src-tauri/target/**/release/*.zip bundles/ 2>/dev/null || true
+          ls -la bundles || true
+
+      - name: Upload bundles artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: bundles-${{ matrix.os }}-${{ matrix.arch }}
+          path: bundles/**
+
+  # ---------- 发布 job：汇总所有 artifacts，创建 Release 并上传 assets ----------
+  publish:
+    name: Create GitHub Release & upload assets
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh || true
+          # fallback: try quick install if apt didn't provide gh
+          if ! command -v gh >/dev/null 2>&1; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+          fi
+          gh --version
+
+      - name: Authenticate gh with GITHUB_TOKEN
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GITHUB_TOKEN}" | gh auth login --with-token
+
+      - name: Download all workflow artifacts
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          # 下载本次 workflow run 的所有 artifacts 到 artifacts/ 目录
+          mkdir -p artifacts
+          gh run download "$GITHUB_RUN_ID" --dir artifacts || true
+          ls -la artifacts || true
+
+      - name: Create or update Release and upload assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euxo pipefail
+          TAG="${TAG}"
+          TITLE="${TAG} (automated build)"
+          NOTES="Automated release created by CI for ${TAG}."
+          # 如果 artifacts 目录为空，仅创建空 release（也可选择失败）
+          if [ -n "$(ls -A artifacts 2>/dev/null || true)" ]; then
+            # 先尝试创建 release（如果已经存在则 create 会失败，转而用 upload）
+            gh release create "$TAG" artifacts/* --title "$TITLE" --notes "$NOTES" || gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || echo "Release already exists and no artifacts to upload."
+          fi
