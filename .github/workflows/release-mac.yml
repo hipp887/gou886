@@ -7,10 +7,15 @@ on:
   workflow_dispatch:
 
 # 明确所需权限（确保能够创建 release、上传 asset 等）
-permissions:
-  contents: write
-  packages: write
-  actions: read
+permissions: write-all
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+  HUSKY: 0
+concurrency:
+  # only allow per workflow per commit (and not pr) to run at a time
+  group: "${{ github.workflow }} - ${{ github.head_ref || github.ref }}"
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -26,12 +31,12 @@ jobs:
             arch: arm64
 
           # macOS（Apple / Intel）
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            arch: arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            arch: x86_64
+          # - os: macos-latest
+          #   target: aarch64-apple-darwin
+          #   arch: arm64
+          # - os: macos-latest
+          #   target: x86_64-apple-darwin
+          #   arch: x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -99,7 +104,13 @@ jobs:
           set -euxo pipefail
           pnpm store prune || true
           rm -rf node_modules
-          pnpm install --frozen-lockfile
+          if [ -f pnpm-lock.yaml ]; then
+            echo "pnpm-lock.yaml found — using frozen lockfile"
+            pnpm install --frozen-lockfile
+          else
+            echo "pnpm-lock.yaml not found — installing without frozen-lockfile"
+            pnpm install --no-frozen-lockfile
+          fi
 
       - name: Rebuild esbuild
         shell: bash
