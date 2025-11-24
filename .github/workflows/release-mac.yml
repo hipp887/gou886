@@ -6,6 +6,7 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+# 明确所需权限（确保能够创建 release、上传 asset 等）
 permissions:
   contents: write
   packages: write
@@ -19,7 +20,7 @@ jobs:
       max-parallel: 3
       matrix:
         include:
-          # Windows
+          # Windows (ARM64)
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             arch: arm64
@@ -38,6 +39,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 单次运行统一的时间戳（用于 ?dir= 或命名）
       - name: Set build timestamp
         shell: bash
         run: |
@@ -45,6 +47,7 @@ jobs:
           echo "UPLOAD_TS=$TS" >> $GITHUB_ENV
           echo "📦 Using upload timestamp: $TS"
 
+      # Node + pnpm
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -61,6 +64,7 @@ jobs:
           node -v
           pnpm -v
 
+      # Rust & target
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -68,6 +72,7 @@ jobs:
         shell: bash
         run: rustup target add ${{ matrix.target }}
 
+      # ---------------- OS-specific deps ----------------
       - name: Install NSIS (Windows)
         if: runner.os == 'Windows'
         shell: powershell
@@ -79,6 +84,7 @@ jobs:
         run: |
           brew update
           brew install coreutils jq || true
+      # --------------------------------------------------
 
       - name: Install JS deps
         timeout-minutes: 20
@@ -118,6 +124,7 @@ jobs:
           set -euxo pipefail
           pnpm run web:build -- --debug
 
+      # 无私钥则移除 updater.pubkey —— Windows
       - name: Disable updater signing when no private key (Win)
         if: runner.os == 'Windows'
         shell: powershell
@@ -134,6 +141,7 @@ jobs:
             Write-Host "TAURI_PRIVATE_KEY present – keep pubkey and sign build."
           }
 
+      # 无私钥则移除 updater.pubkey —— *nix（兼容 macOS 的 awk）
       - name: Disable updater signing when no private key (*nix)
         if: runner.os != 'Windows'
         shell: bash
@@ -148,6 +156,7 @@ jobs:
             echo "TAURI_PRIVATE_KEY present – keep pubkey and sign build."
           fi
 
+      # ------------ Tauri build：原生构建（或 Linux x86_64 原生）------------
       - name: Tauri build (native)
         if: runner.os != 'Linux' || matrix.target == 'x86_64-unknown-linux-gnu'
         timeout-minutes: 90
@@ -162,7 +171,7 @@ jobs:
           args: --target ${{ matrix.target }}
           includeUpdaterJson: true
 
-      # ---------------- 上传 artifact 以供 publish job 使用 ----------------
+      # ---------------- 上传 artifact：改为 actions/upload-artifact@v4 ----------------
       - name: Collect bundles for artifact upload
         shell: bash
         run: |
@@ -178,16 +187,17 @@ jobs:
           ls -la bundles || true
 
       - name: Upload bundles artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bundles-${{ matrix.os }}-${{ matrix.arch }}
           path: bundles/**
 
-  # ---------- 发布 job：汇总所有 artifacts，创建 Release 并上传 assets ----------
+  # ---------- publish job：汇总所有 artifacts，创建 Release 并上传 assets ----------
   publish:
     name: Create GitHub Release & upload assets
     runs-on: ubuntu-latest
     needs: build
+    # 仅在 tag push 时才执行
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Install GitHub CLI
@@ -214,7 +224,6 @@ jobs:
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          # 下载本次 workflow run 的所有 artifacts 到 artifacts/ 目录
           mkdir -p artifacts
           gh run download "$GITHUB_RUN_ID" --dir artifacts || true
           ls -la artifacts || true
@@ -227,9 +236,8 @@ jobs:
           TAG="${TAG}"
           TITLE="${TAG} (automated build)"
           NOTES="Automated release created by CI for ${TAG}."
-          # 如果 artifacts 目录为空，仅创建空 release（也可选择失败）
           if [ -n "$(ls -A artifacts 2>/dev/null || true)" ]; then
-            # 先尝试创建 release（如果已经存在则 create 会失败，转而用 upload）
+            # 尝试创建 release（若已存在则失败并走 upload）
             gh release create "$TAG" artifacts/* --title "$TITLE" --notes "$NOTES" || gh release upload "$TAG" artifacts/* --clobber
           else
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES" || echo "Release already exists and no artifacts to upload."
